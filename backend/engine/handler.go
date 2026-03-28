@@ -1,19 +1,26 @@
 package engine
 
 import (
+	"axiom-bridge/config"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+type AnalysisInput struct {
+	Text     string
+	FileName string
+	MIMEType string
+	FileData []byte
+}
 
 // ProgressEvent represents a single SSE event
 type ProgressEvent struct {
@@ -38,7 +45,7 @@ func ProcessInput(c *gin.Context) {
 
 // ProcessInputSync handles standard synchronous processing
 func ProcessInputSync(c *gin.Context) {
-	inputText, err := extractInputText(c)
+	input, err := extractAnalysisInput(c)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -48,7 +55,7 @@ func ProcessInputSync(c *gin.Context) {
 	ctx := context.Background()
 
 	// 2. Cache Lookup
-	key := GenerateKey([]byte(inputText))
+	key := GenerateKey(cacheKeyPayload(input))
 	if val, found := GetCache(key); found {
 		log.Printf("Cache hit for key %s", key)
 		result := val.(*ExtractionResult)
@@ -62,7 +69,7 @@ func ProcessInputSync(c *gin.Context) {
 
 	// 3. Intelligence call
 	log.Println("Calling Gemini Flash...")
-	result, err := CallGemini(ctx, inputText)
+	result, err := CallGemini(ctx, input)
 	if err != nil {
 		log.Printf("Vertex Error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "AI processing failed", "details": err.Error()})
@@ -72,13 +79,16 @@ func ProcessInputSync(c *gin.Context) {
 	// 4. Stream to BigQuery (async-friendly, non-blocking)
 	go func() {
 		record := &ActionRecord{
-			ID:          key,
-			Timestamp:   time.Now(),
-			InputUri:    fmt.Sprintf("inline://text"),
-			Urgency:     result.Urgency,
-			Summary:     result.Summary,
-			ActionItems: result.ActionItems,
-			Entities:    result.Entities,
+			ID:                key,
+			Timestamp:         time.Now(),
+			InputUri:          buildInputURI(input),
+			Urgency:           result.Urgency,
+			Confidence:        result.Confidence,
+			Summary:           result.Summary,
+			PossibleCondition: result.PossibleCondition,
+			Actions:           result.Actions,
+			DoNot:             result.DoNot,
+			Reasoning:         result.Reasoning,
 			Metadata: map[string]interface{}{
 				"source": "api",
 			},
@@ -104,7 +114,7 @@ func ProcessInputSSE(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 
-	inputText, err := extractInputText(c)
+	input, err := extractAnalysisInput(c)
 	if err != nil {
 		sendErrorEvent(c.Writer, err.Error())
 		return
@@ -124,10 +134,11 @@ func ProcessInputSSE(c *gin.Context) {
 		eventJSON, _ := json.Marshal(event)
 		fmt.Fprintf(writer, "data: %s\n\n", string(eventJSON))
 		writer.Flush()
+		maybePauseStream()
 	}
 
 	// 2. Cache Lookup
-	key := GenerateKey([]byte(inputText))
+	key := GenerateKey(cacheKeyPayload(input))
 	sendEvent("cache", "checking", "Looking up cache...", nil)
 
 	if val, found := GetCache(key); found {
@@ -142,7 +153,7 @@ func ProcessInputSSE(c *gin.Context) {
 
 	// 3. Intelligence call
 	sendEvent("gemini", "processing", "Analyzing with Gemini Flash...", nil)
-	result, err := CallGemini(ctx, inputText)
+	result, err := CallGemini(ctx, input)
 	if err != nil {
 		log.Printf("Vertex Error: %v", err)
 		sendEvent("gemini", "error", fmt.Sprintf("AI processing failed: %v", err), nil)
@@ -153,13 +164,16 @@ func ProcessInputSSE(c *gin.Context) {
 	// 4. Stream to BigQuery
 	sendEvent("bigquery", "processing", "Saving structured result...", nil)
 	record := &ActionRecord{
-		ID:          key,
-		Timestamp:   time.Now(),
-		InputUri:    fmt.Sprintf("inline://text"),
-		Urgency:     result.Urgency,
-		Summary:     result.Summary,
-		ActionItems: result.ActionItems,
-		Entities:    result.Entities,
+		ID:                key,
+		Timestamp:         time.Now(),
+		InputUri:          buildInputURI(input),
+		Urgency:           result.Urgency,
+		Confidence:        result.Confidence,
+		Summary:           result.Summary,
+		PossibleCondition: result.PossibleCondition,
+		Actions:           result.Actions,
+		DoNot:             result.DoNot,
+		Reasoning:         result.Reasoning,
 		Metadata: map[string]interface{}{
 			"source": "sse",
 		},
@@ -181,6 +195,15 @@ func ProcessInputSSE(c *gin.Context) {
 	})
 }
 
+func maybePauseStream() {
+	appConfig := config.Load()
+	if currentVertexMode() != "mock" || appConfig.StreamStepDelayMillis == 0 {
+		return
+	}
+
+	time.Sleep(time.Duration(appConfig.StreamStepDelayMillis) * time.Millisecond)
+}
+
 // HealthCheck is a simple health endpoint
 func HealthCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
@@ -196,6 +219,14 @@ func HealthCheck(c *gin.Context) {
 }
 
 func extractInputText(c *gin.Context) (string, error) {
+	input, err := extractAnalysisInput(c)
+	if err != nil {
+		return "", err
+	}
+	return fallbackInputText(input), nil
+}
+
+func extractAnalysisInput(c *gin.Context) (*AnalysisInput, error) {
 	var input struct {
 		Text string `json:"text"`
 	}
@@ -203,29 +234,41 @@ func extractInputText(c *gin.Context) (string, error) {
 	contentType := c.ContentType()
 	if strings.Contains(contentType, "application/json") {
 		if err := c.ShouldBindJSON(&input); err == nil {
-			return validateInputText(input.Text)
+			text, textErr := validateInputText(input.Text)
+			if textErr != nil {
+				return nil, textErr
+			}
+			return &AnalysisInput{Text: text}, nil
 		}
 	}
 
+	var text string
 	if textForm := c.PostForm("text"); textForm != "" {
-		return validateInputText(textForm)
+		validatedText, textErr := validateInputText(textForm)
+		if textErr != nil {
+			return nil, textErr
+		}
+		text = validatedText
 	}
 
-	file, _, err := c.Request.FormFile("file")
+	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		if errors.Is(err, http.ErrMissingFile) {
-			return "", fmt.Errorf("invalid input: provide non-empty 'text' or 'file'")
+			if text != "" {
+				return &AnalysisInput{Text: text}, nil
+			}
+			return nil, fmt.Errorf("invalid input: provide non-empty 'text' or 'file'")
 		}
-		return "", fmt.Errorf("failed to read uploaded file: %w", err)
+		return nil, fmt.Errorf("failed to read uploaded file: %w", err)
 	}
 	defer file.Close()
 
 	fileBytes, err := io.ReadAll(file)
 	if err != nil {
-		return "", fmt.Errorf("failed to read uploaded file: %w", err)
+		return nil, fmt.Errorf("failed to read uploaded file: %w", err)
 	}
 
-	return normalizeUploadedFile(file, fileBytes)
+	return normalizeUploadedFile(text, header.Filename, fileBytes)
 }
 
 func validateInputText(text string) (string, error) {
@@ -241,27 +284,34 @@ func sendErrorEvent(writer gin.ResponseWriter, message string) {
 	writer.Flush()
 }
 
-func normalizeUploadedFile(file multipart.File, fileBytes []byte) (string, error) {
+func normalizeUploadedFile(text, fileName string, fileBytes []byte) (*AnalysisInput, error) {
 	if len(fileBytes) == 0 {
-		return "", fmt.Errorf("uploaded file is empty")
-	}
-
-	if seeker, ok := file.(io.Seeker); ok {
-		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
-			return "", fmt.Errorf("failed to reset uploaded file stream: %w", err)
-		}
+		return nil, fmt.Errorf("uploaded file is empty")
 	}
 
 	contentType := http.DetectContentType(fileBytes)
 	if isTextLikeContent(contentType, fileBytes) {
-		return validateInputText(string(fileBytes))
+		fileText, err := validateInputText(string(fileBytes))
+		if err != nil {
+			return nil, err
+		}
+		if text != "" {
+			fileText = text + "\n\nAttached file content:\n" + fileText
+		}
+		return &AnalysisInput{
+			Text:     fileText,
+			FileName: fileName,
+			MIMEType: contentType,
+			FileData: fileBytes,
+		}, nil
 	}
 
-	return fmt.Sprintf(
-		"Binary file uploaded for analysis. MIME type: %s. Size: %d bytes. Extract high-level operational signals, probable risk, and recommended next steps from this file context.",
-		contentType,
-		len(fileBytes),
-	), nil
+	return &AnalysisInput{
+		Text:     text,
+		FileName: fileName,
+		MIMEType: contentType,
+		FileData: fileBytes,
+	}, nil
 }
 
 func isTextLikeContent(contentType string, fileBytes []byte) bool {
@@ -269,4 +319,31 @@ func isTextLikeContent(contentType string, fileBytes []byte) bool {
 		return true
 	}
 	return false
+}
+
+func fallbackInputText(input *AnalysisInput) string {
+	if input == nil {
+		return ""
+	}
+	if strings.TrimSpace(input.Text) != "" {
+		return input.Text
+	}
+	if input.FileName != "" {
+		return fmt.Sprintf("Uploaded file: %s", input.FileName)
+	}
+	return ""
+}
+
+func cacheKeyPayload(input *AnalysisInput) []byte {
+	if input == nil {
+		return nil
+	}
+	return []byte(fmt.Sprintf("%s|%s|%s|%d", input.Text, input.FileName, input.MIMEType, len(input.FileData)))
+}
+
+func buildInputURI(input *AnalysisInput) string {
+	if input == nil || input.FileName == "" {
+		return "inline://text"
+	}
+	return fmt.Sprintf("inline://file/%s", input.FileName)
 }

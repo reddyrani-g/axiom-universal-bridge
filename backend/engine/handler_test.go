@@ -44,8 +44,20 @@ func TestProcessInputSyncJSON(t *testing.T) {
 	if body.Result.Urgency == "" {
 		t.Fatal("expected urgency to be populated")
 	}
-	if len(body.Result.ActionItems) == 0 {
-		t.Fatal("expected action items in mock response")
+	if body.Result.Confidence <= 0 {
+		t.Fatal("expected confidence to be populated")
+	}
+	if body.Result.PossibleCondition == "" {
+		t.Fatal("expected possible condition in mock response")
+	}
+	if len(body.Result.Actions) == 0 {
+		t.Fatal("expected actions in mock response")
+	}
+	if len(body.Result.DoNot) == 0 {
+		t.Fatal("expected do_not guidance in mock response")
+	}
+	if body.Result.Reasoning == "" {
+		t.Fatal("expected reasoning in mock response")
 	}
 }
 
@@ -54,12 +66,15 @@ func TestProcessInputReturnsCacheHit(t *testing.T) {
 
 	inputText := "Quarterly budget review with follow up items."
 	expected := &ExtractionResult{
-		Urgency:     "MEDIUM",
-		Summary:     "cached result",
-		ActionItems: []string{"cached action"},
-		Entities:    []string{"Budget"},
+		Urgency:           "MEDIUM",
+		Confidence:        0.81,
+		Summary:           "cached result",
+		PossibleCondition: "Budget overrun / planning variance",
+		Actions:           []string{"cached action"},
+		DoNot:             []string{"cached caution"},
+		Reasoning:         "cached reasoning",
 	}
-	SetCache(GenerateKey([]byte(inputText)), expected)
+	SetCache(GenerateKey(cacheKeyPayload(&AnalysisInput{Text: inputText})), expected)
 
 	req := httptest.NewRequest(http.MethodPost, "/process", strings.NewReader(`{"text":"`+inputText+`"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -133,6 +148,29 @@ func TestProcessInputSSEWithMultipartFileFromFixtures(t *testing.T) {
 	}
 	if !strings.Contains(body, `"source":"ai"`) {
 		t.Fatalf("expected ai source in SSE completion body, got %s", body)
+	}
+}
+
+func TestProcessInputSSEWithAudioFixture(t *testing.T) {
+	setupTestEnv(t)
+
+	req := newMultipartFixtureRequest(t, filepath.Join("..", "..", "test", "arunangshubanerjee-suburban-alley-traffic-ambience-359577.mp3"), true)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	ProcessInput(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"step":"gemini"`) {
+		t.Fatalf("expected gemini event in SSE body, got %s", body)
+	}
+	if !strings.Contains(body, `"step":"complete"`) {
+		t.Fatalf("expected complete event in SSE body, got %s", body)
 	}
 }
 

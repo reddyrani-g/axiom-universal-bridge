@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
@@ -81,6 +81,25 @@ function formatTimestamp(value: Date) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function buildDisplayResponse(result: any) {
+  if (!result) {
+    return null;
+  }
+
+  return {
+    urgency: result.urgency ?? "UNKNOWN",
+    confidence:
+      typeof result.confidence === "number"
+        ? Number(result.confidence.toFixed(2))
+        : null,
+    summary: result.summary ?? "",
+    possible_condition: result.possible_condition ?? "",
+    actions: Array.isArray(result.actions) ? result.actions : [],
+    do_not: Array.isArray(result.do_not) ? result.do_not : [],
+    reasoning: result.reasoning ?? "",
+  };
 }
 
 export default function Home() {
@@ -230,24 +249,6 @@ export default function Home() {
   };
 
   const latestResult = result?.result;
-  const metrics = useMemo(() => {
-    if (!latestResult) return [];
-
-    return [
-      {
-        label: "Urgency",
-        value: latestResult.urgency || "Unknown",
-      },
-      {
-        label: "Actions",
-        value: String(latestResult.action_items?.length || 0),
-      },
-      {
-        label: "Entities",
-        value: String(latestResult.entities?.length || 0),
-      }
-    ];
-  }, [latestResult]);
 
   const urgencyTone =
     latestResult?.urgency === "CRITICAL" || latestResult?.urgency === "HIGH"
@@ -255,6 +256,11 @@ export default function Home() {
       : latestResult?.urgency === "MEDIUM"
       ? "bg-amber-500/15 text-amber-700 ring-amber-200"
       : "bg-emerald-500/15 text-emerald-700 ring-emerald-200";
+
+  const displayResponse = buildDisplayResponse(latestResult);
+  const primaryResponseText = displayResponse
+    ? JSON.stringify(displayResponse, null, 2)
+    : result?.error || "Run analysis to see the response.";
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(14,165,233,0.18),_transparent_30%),radial-gradient(circle_at_top_right,_rgba(244,114,182,0.14),_transparent_26%),linear-gradient(180deg,_#f8fbff_0%,_#eef4ff_48%,_#f7f9fc_100%)]">
@@ -450,6 +456,7 @@ export default function Home() {
                       <input
                         id="file-input"
                         type="file"
+                        accept="image/*,audio/*,text/*,application/json,application/xml"
                         onChange={(e) => setFile(e.target.files?.[0] || null)}
                         className="hidden"
                       />
@@ -459,7 +466,7 @@ export default function Home() {
                         </div>
                         <div>
                           <p className="text-sm font-semibold text-slate-900">Upload supporting file</p>
-                          <p className="mt-1 text-xs text-slate-500">Drag and drop or click to select a document</p>
+                          <p className="mt-1 text-xs text-slate-500">Drag and drop or click to select an image, audio, or text document</p>
                         </div>
                       </div>
                     </label>
@@ -518,20 +525,9 @@ export default function Home() {
                 <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Output Panel</p>
-                    <h2 className="mt-2 text-2xl font-bold text-slate-950">Insights and raw payload</h2>
-                    <p className="mt-2 text-sm text-slate-600">Track the pipeline live, then review the extracted summary, actions, entities, and JSON.</p>
+                    <h2 className="mt-2 text-2xl font-bold text-slate-950">Structured response</h2>
+                    <p className="mt-2 text-sm text-slate-600">Track the pipeline live, then review one compact response object.</p>
                   </div>
-
-                  {metrics.length > 0 && (
-                    <div className="grid grid-cols-3 gap-2">
-                      {metrics.map((metric) => (
-                        <div key={metric.label} className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-center">
-                          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">{metric.label}</p>
-                          <p className="mt-1 text-base font-bold text-slate-900">{metric.value}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
 
                 {loading ? (
@@ -539,6 +535,29 @@ export default function Home() {
                     <div className="rounded-[28px] border border-slate-200 bg-slate-50 p-4">
                       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Pipeline status</p>
                       <p className="mt-2 text-sm text-slate-700">Axiom Bridge is streaming step-by-step progress as your input moves through the stack.</p>
+                    </div>
+
+                    <div className="rounded-[30px] border border-slate-200 bg-[linear-gradient(135deg,_rgba(14,165,233,0.12),_rgba(255,255,255,0.96),_rgba(244,114,182,0.08))] p-6">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Preparing response</p>
+                        <span className="inline-flex items-center gap-2 rounded-full bg-sky-100 px-3 py-1 text-xs font-semibold text-sky-700">
+                          <span className="h-2 w-2 animate-pulse rounded-full bg-sky-500" />
+                          Streaming
+                        </span>
+                      </div>
+
+                      <div className="mt-4 rounded-[24px] bg-slate-950 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                        <div className="space-y-3">
+                          <div className="h-4 w-32 animate-pulse rounded-full bg-emerald-200/20" />
+                          <div className="h-4 w-5/6 animate-pulse rounded-full bg-emerald-200/15" />
+                          <div className="h-4 w-4/6 animate-pulse rounded-full bg-emerald-200/15" />
+                          <div className="h-4 w-3/4 animate-pulse rounded-full bg-emerald-200/15" />
+                          <div className="h-4 w-2/3 animate-pulse rounded-full bg-emerald-200/15" />
+                          <div className="pt-2 text-xs font-medium text-slate-400">
+                            {events[events.length - 1]?.message || "Waiting for the backend to finish the structured response..."}
+                          </div>
+                        </div>
+                      </div>
                     </div>
 
                     {steps.map((step, idx) => {
@@ -589,9 +608,9 @@ export default function Home() {
                   <div className="flex flex-1 flex-col justify-between gap-6">
                     <div className="rounded-[30px] border border-dashed border-slate-300 bg-[linear-gradient(135deg,_rgba(14,165,233,0.08),_rgba(255,255,255,0.92),_rgba(244,114,182,0.06))] p-8">
                       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Waiting for analysis</p>
-                      <h3 className="mt-3 text-2xl font-bold text-slate-950">Your results will land here.</h3>
+                      <h3 className="mt-3 text-2xl font-bold text-slate-950">Your response will land here.</h3>
                       <p className="mt-3 max-w-xl text-sm text-slate-600">
-                        Once you run a prompt, you&apos;ll get a concise summary, action items, extracted entities, pipeline progress, and the full structured response.
+                        Once you run a prompt, you&apos;ll get a simple text response, pipeline progress, and optional raw JSON if you want to inspect the payload.
                       </p>
                     </div>
 
@@ -626,40 +645,14 @@ export default function Home() {
                       </span>
                     </div>
 
-                    <div className="rounded-[30px] border border-slate-200 bg-[linear-gradient(135deg,_rgba(14,165,233,0.12),_rgba(255,255,255,0.96),_rgba(244,114,182,0.08))] p-5">
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Summary</p>
-                      <p className="mt-3 text-sm leading-7 text-slate-700">{latestResult.summary || "No summary returned."}</p>
+                    <div className="rounded-[30px] border border-slate-200 bg-[linear-gradient(135deg,_rgba(14,165,233,0.12),_rgba(255,255,255,0.96),_rgba(244,114,182,0.08))] p-6">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Response</p>
+                      <div className="mt-4 overflow-x-auto rounded-[24px] bg-slate-950 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                        <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-7 text-emerald-100">
+                          {primaryResponseText}
+                        </pre>
+                      </div>
                     </div>
-
-                    {latestResult.action_items?.length > 0 && (
-                      <div className="rounded-[30px] border border-violet-200 bg-violet-50/80 p-5">
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-600">Action Items</p>
-                        <div className="mt-4 space-y-3">
-                          {latestResult.action_items.map((item: string, index: number) => (
-                            <div key={`${item}-${index}`} className="flex gap-3 rounded-2xl bg-white/80 p-3">
-                              <div className="mt-1 h-2.5 w-2.5 flex-shrink-0 rounded-full bg-violet-500" />
-                              <p className="text-sm leading-6 text-slate-700">{item}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {latestResult.entities?.length > 0 && (
-                      <div className="rounded-[30px] border border-emerald-200 bg-emerald-50/80 p-5">
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-700">Entities</p>
-                        <div className="mt-4 flex flex-wrap gap-2">
-                          {latestResult.entities.map((entity: string, index: number) => (
-                            <span
-                              key={`${entity}-${index}`}
-                              className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700"
-                            >
-                              {entity}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
 
                     <div className="rounded-[30px] border border-slate-200 bg-slate-950 p-3 shadow-[0_18px_40px_rgba(2,6,23,0.22)]">
                       <button

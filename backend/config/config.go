@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -14,6 +15,7 @@ const (
 	AIModeMock             = "mock"
 	AIModeLocal            = "local"
 	BigQueryModeOff         = "off"
+	DefaultStreamStepDelayMillis = 250
 )
 
 type AppConfig struct {
@@ -25,6 +27,7 @@ type AppConfig struct {
 	BigQueryTable      string
 	AIMode             string
 	BigQueryMode       string
+	StreamStepDelayMillis int
 }
 
 func Load() AppConfig {
@@ -37,6 +40,7 @@ func Load() AppConfig {
 		BigQueryTable:       getEnv("BIGQUERY_TABLE", DefaultBigQueryTable),
 		AIMode:              strings.ToLower(strings.TrimSpace(os.Getenv("AXIOM_AI_MODE"))),
 		BigQueryMode:        strings.ToLower(strings.TrimSpace(os.Getenv("AXIOM_BIGQUERY_MODE"))),
+		StreamStepDelayMillis: getEnvAsInt("AXIOM_STREAM_STEP_DELAY_MS", DefaultStreamStepDelayMillis),
 	}
 }
 
@@ -46,4 +50,18 @@ func getEnv(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func getEnvAsInt(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+
+	return parsed
 }
