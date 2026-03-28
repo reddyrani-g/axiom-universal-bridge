@@ -7,30 +7,26 @@ if [ -z "$PROJECT_ID" ]; then
     exit 1
 fi
 
-echo "Deploying Axiom Bridge pipeline to project: $PROJECT_ID"
+echo "Deploying Axiom Bridge to Google Cloud Run..."
+echo "Project: $PROJECT_ID"
 
-echo "1. Building Glassmorphic Frontend Phase..."
-cd frontend
-npm run build
-cd ..
+echo "Step 1: Starting deployment from root directory..."
 
-echo "2. Setting up Go Intelligence Backend..."
-cd backend
-go mod tidy
-cd ..
-
-echo "3. Merging Assets (Next.js -> Go Public Directory)..."
-rm -rf backend/public
-mkdir -p backend/public
-cp -r frontend/out/* backend/public/
-
-echo "4. Pushing Payload to Google Cloud Run Serverless..."
-cd backend
+# Deploy using root directory context so Dockerfile can access both frontend and backend
 gcloud run deploy axiom-bridge \
   --source . \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1 \
+  --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,BACKEND_URL=http://localhost:8080 \
   --quiet
 
-echo "Axiom Universal Bridge Deployment Complete!"
+echo ""
+echo "✅ Axiom Universal Bridge deployed successfully!"
+echo ""
+echo "Retrieving service URL..."
+SERVICE_URL=$(gcloud run services describe axiom-bridge --region us-central1 --format 'value(status.url)')
+echo ""
+echo "🌉 Service URL: $SERVICE_URL"
+echo ""
+echo "Access your Bridge at: $SERVICE_URL"
+
