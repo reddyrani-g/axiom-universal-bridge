@@ -1,0 +1,28 @@
+# MISSION: Build Axiom Universal Bridge
+You are a Lead Cloud Architect. Build a production-ready "Universal Bridge" on Google Cloud.
+
+## 1. ARCHITECTURE GOAL
+Create a multimodal ingestion engine that converts unstructured "chaos" (audio, images, text) into structured JSON actions using Gemini 3 Flash.
+
+## 2. TECH STACK REQUIREMENTS
+- Orchestrator: FastAPI backend running on Google Cloud Run.
+- Intelligence: Vertex AI SDK using `gemini-3-flash` for text/audio and `nano-banana-2` for image reasoning.
+- Security: Integrate Cloud DLP API to redact PII from inputs before processing.
+- Storage: Land raw files in GCS; stream structured results to BigQuery.
+- Infrastructure: Generate all necessary Terraform scripts for GCS, BigQuery, and Cloud Run.
+
+## 3. IMPLEMENTATION STEPS
+1. INITIALIZE: Set up a Python environment with FastAPI, Uvicorn, and Vertex AI SDK.
+2. AGENT LOGIC: Create a `nexus_engine.py` that handles multimodal parts (Part.from_uri).
+3. PROMPT ENGINEERING: Use a high-fidelity system instruction that enforces a specific JSON schema (urgency, summary, action_items, entities).
+4. VALIDATION: Create a `/health` and a `/process` endpoint. 
+5. CI/CD: Generate a Dockerfile and a `deploy.sh` script using `gcloud run deploy`.
+
+## 4. DESIGN RULES (GEMINI.md)
+- Follow PEP 8 for Python logic.
+- Use async/await for all network calls.
+- Implement 'Model Armor' logic to prevent prompt injection.
+- Create a stunning, glassmorphic UI using Flutter or React that visualizes the "Bridge" in real-time.
+
+Plan the architecture first, show me the diagram, and wait for my review before writing code.
+
