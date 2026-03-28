@@ -1,10 +1,10 @@
 package engine
 
 import (
+	"axiom-bridge/config"
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"cloud.google.com/go/bigquery"
@@ -28,8 +28,14 @@ type ActionRecord struct {
 
 // InitBigQuery initializes the BigQuery client
 func InitBigQuery() error {
+	appConfig := config.Load()
+	if appConfig.BigQueryMode == config.BigQueryModeOff {
+		log.Println("BigQuery disabled by AXIOM_BIGQUERY_MODE=off")
+		return nil
+	}
+
 	ctx := context.Background()
-	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
+	projectID := appConfig.GoogleCloudProject
 	if projectID == "" {
 		return fmt.Errorf("GOOGLE_CLOUD_PROJECT environment variable not set")
 	}
@@ -48,15 +54,9 @@ func StreamToBigQuery(ctx context.Context, record *ActionRecord) error {
 		return fmt.Errorf("BigQuery client not initialized")
 	}
 
-	datasetID := os.Getenv("BIGQUERY_DATASET")
-	if datasetID == "" {
-		datasetID = "axiom_bridge"
-	}
-
-	tableID := os.Getenv("BIGQUERY_TABLE")
-	if tableID == "" {
-		tableID = "actions"
-	}
+	appConfig := config.Load()
+	datasetID := appConfig.BigQueryDataset
+	tableID := appConfig.BigQueryTable
 
 	table := bqClient.Dataset(datasetID).Table(tableID)
 

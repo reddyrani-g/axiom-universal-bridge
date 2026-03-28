@@ -10,7 +10,6 @@ import {
   FileText,
   Menu,
   Plus,
-  ShieldCheck,
   Sparkles,
   Trash2,
   UploadCloud
@@ -36,7 +35,6 @@ interface ChatSession {
 
 const steps = [
   { title: "Cache", icon: <Database size={16} />, key: "cache" },
-  { title: "Redaction", icon: <ShieldCheck size={16} />, key: "dlp" },
   { title: "Analysis", icon: <BrainCircuit size={16} />, key: "gemini" },
   { title: "Storage", icon: <Activity size={16} />, key: "bigquery" }
 ];

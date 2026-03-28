@@ -1,12 +1,12 @@
 package engine
 
 import (
+	"axiom-bridge/config"
 	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log"
-	"os"
 
 	"cloud.google.com/go/storage"
 )
@@ -53,11 +53,7 @@ func UploadToGCS(ctx context.Context, bucketName, objectName string, data []byte
 
 // GetGCSBucket returns the configured GCS bucket name
 func GetGCSBucket() string {
-	bucket := os.Getenv("GCS_BUCKET")
-	if bucket == "" {
-		bucket = "axiom-bridge-files"
-	}
-	return bucket
+	return config.Load().GCSBucket
 }
 
 // CloseGCS closes the GCS client

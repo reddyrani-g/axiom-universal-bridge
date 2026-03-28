@@ -1,6 +1,7 @@
 package main
 
 import (
+	"axiom-bridge/config"
 	"axiom-bridge/engine"
 	"context"
 	"log"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+var appConfig = config.Load()
 
 func init() {
 	// Initialize cache
@@ -26,14 +29,16 @@ func init() {
 	if err := engine.InitBigQuery(); err != nil {
 		log.Printf("Warning: BigQuery initialization failed: %v (will skip saving results)", err)
 	}
-
-	// Initialize Cloud DLP (graceful fallback if not configured)
-	if err := engine.InitDLP(); err != nil {
-		log.Printf("Warning: DLP initialization failed: %v (will use regex redaction)", err)
-	}
 }
 
 func main() {
+	log.Printf(
+		"Backend configuration: port=%s vertex_mode=%s project_set=%t",
+		appConfig.Port,
+		engineMode(),
+		appConfig.GoogleCloudProject != "",
+	)
+
 	// Setup Gin router
 	r := gin.Default()
 
@@ -59,10 +64,7 @@ func main() {
 	// Serve static frontend from public directory
 	r.NoRoute(gin.WrapH(http.FileServer(http.Dir("./public"))))
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	port := appConfig.Port
 
 	log.Printf("🌉 Starting Axiom Universal Bridge on port %s", port)
 
@@ -96,12 +98,16 @@ func main() {
 		if err := engine.CloseBigQuery(); err != nil {
 			log.Printf("BigQuery close error: %v", err)
 		}
-		if err := engine.CloseDLP(); err != nil {
-			log.Printf("DLP close error: %v", err)
-		}
 	}()
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
+}
+
+func engineMode() string {
+	if appConfig.AIMode == config.AIModeMock || appConfig.AIMode == config.AIModeLocal || appConfig.GoogleCloudProject == "" {
+		return "mock"
+	}
+	return "vertex"
 }

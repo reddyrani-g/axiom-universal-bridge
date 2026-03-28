@@ -1,19 +1,20 @@
 export const dynamic = "force-dynamic";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8080";
+import { getServerConfig } from "@/lib/server-config";
 
 export async function POST(req: Request) {
   try {
     const formData = await req.formData();
     const url = new URL(req.url);
     const isStream = url.searchParams.get("stream") === "true";
+    const { backendUrl } = getServerConfig();
 
-    const backendUrl = new URL("/process", BACKEND_URL);
+    const targetUrl = new URL("/process", backendUrl);
     if (isStream) {
-      backendUrl.searchParams.set("stream", "true");
+      targetUrl.searchParams.set("stream", "true");
     }
 
-    const backendResponse = await fetch(backendUrl.toString(), {
+    const backendResponse = await fetch(targetUrl.toString(), {
       method: "POST",
       body: formData,
     });
@@ -48,10 +49,11 @@ export async function POST(req: Request) {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const path = url.searchParams.get("path") || "/health";
+  const { backendUrl } = getServerConfig();
 
   try {
-    const backendUrl = new URL(path, BACKEND_URL);
-    const response = await fetch(backendUrl.toString());
+    const targetUrl = new URL(path, backendUrl);
+    const response = await fetch(targetUrl.toString());
     return response;
   } catch (error) {
     return new Response(`Backend unreachable`, { status: 503 });
