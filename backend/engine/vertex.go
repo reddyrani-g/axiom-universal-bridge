@@ -6,29 +6,88 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
-	"sort"
 	"strings"
 
 	"cloud.google.com/go/vertexai/genai"
 )
 
+const emergencyResponsePromptTemplate = `You are an AI-powered emergency response assistant designed to save lives.
+
+Your job is to analyze messy, real-world user input (which may include symptoms, accidents, unclear descriptions, or emotional language) and convert it into structured, actionable, and safety-critical guidance.
+
+IMPORTANT RULES:
+
+* Always prioritize human safety.
+* Be cautious and conservative in your assessment.
+* If there is any possibility of danger, increase urgency.
+* Do NOT provide vague answers.
+* Output MUST be valid JSON only (no extra text).
+
+Return the response in the following JSON format:
+
+{
+"urgency": "LOW | MEDIUM | HIGH | CRITICAL",
+"confidence": number (0 to 1),
+"summary": "Clear one-line explanation of the situation",
+"possible_condition": "Likely issue (if applicable)",
+"actions": [
+"Step-by-step immediate actions",
+"Keep instructions simple and practical"
+],
+"do_not": [
+"Things the user should avoid doing"
+],
+"reasoning": "Short explanation of why this assessment was made"
+}
+
+GUIDELINES:
+
+* "CRITICAL" = life-threatening (heart attack, unconsciousness, severe bleeding)
+
+* "HIGH" = urgent but not immediately fatal
+
+* "MEDIUM" = needs attention
+
+* "LOW" = safe / informational
+
+* Actions must be:
+
+  * Clear
+  * Immediate
+  * Practical
+  * Non-technical
+
+* If relevant:
+
+  * Suggest calling emergency services
+  * Suggest nearby help (generic, no need for real API)
+
+* Avoid hallucinations.
+
+* If unsure, say "possible" or "uncertain" but still guide safely.
+
+INPUT:
+%s`
+
 type ExtractionResult struct {
-	Urgency     string   `json:"urgency"`
-	Summary     string   `json:"summary"`
-	ActionItems []string `json:"action_items"`
-	Entities    []string `json:"entities"`
+	Urgency           string   `json:"urgency"`
+	Confidence        float64  `json:"confidence"`
+	Summary           string   `json:"summary"`
+	PossibleCondition string   `json:"possible_condition"`
+	Actions           []string `json:"actions"`
+	DoNot             []string `json:"do_not"`
+	Reasoning         string   `json:"reasoning"`
 }
 
 // CallGemini sends the request to Vertex AI, or returns a deterministic local mock result.
-func CallGemini(ctx context.Context, text string) (*ExtractionResult, error) {
+func CallGemini(ctx context.Context, input *AnalysisInput) (*ExtractionResult, error) {
 	appConfig := config.Load()
 	projectID := appConfig.GoogleCloudProject
 	location := appConfig.GoogleCloudLocation
 
 	if useMockAI(projectID) {
 		log.Println("Vertex AI unavailable or disabled, returning local mock result")
-		return buildMockExtractionResult(text), nil
+		return buildMockExtractionResult(input), nil
 	}
 
 	client, err := genai.NewClient(ctx, projectID, location)
@@ -39,13 +98,9 @@ func CallGemini(ctx context.Context, text string) (*ExtractionResult, error) {
 
 	model := client.GenerativeModel("gemini-3-flash")
 	model.ResponseMIMEType = "application/json"
-	model.SystemInstruction = &genai.Content{
-		Parts: []genai.Part{
-			genai.Text("You are an expert action extraction engine. Analyze the provided text. Return a JSON object exactly matching this schema: {\"urgency\": \"(LOW/MEDIUM/HIGH/CRITICAL)\", \"summary\": \"(1-2 sentence summary)\", \"action_items\": [\"list\", \"of\", \"actions\"], \"entities\": [\"recognized\", \"entities\"]}"),
-		},
-	}
+	parts := buildPromptParts(input)
 
-	resp, err := model.GenerateContent(ctx, genai.Text(text))
+	resp, err := model.GenerateContent(ctx, parts...)
 	if err != nil {
 		return nil, fmt.Errorf("model generation failed: %w", err)
 	}
@@ -65,7 +120,7 @@ func CallGemini(ctx context.Context, text string) (*ExtractionResult, error) {
 		return nil, fmt.Errorf("failed to parse JSON response: %w", err)
 	}
 
-	normalizeExtractionResult(&result, text)
+	normalizeExtractionResult(&result, fallbackInputText(input))
 	return &result, nil
 }
 
@@ -81,32 +136,85 @@ func currentVertexMode() string {
 	return "vertex"
 }
 
-func buildMockExtractionResult(text string) *ExtractionResult {
-	trimmed := strings.TrimSpace(text)
+func buildMockExtractionResult(input *AnalysisInput) *ExtractionResult {
+	sourceText := fallbackInputText(input)
+	trimmed := strings.TrimSpace(sourceText)
 	if trimmed == "" {
 		return &ExtractionResult{
-			Urgency:     "LOW",
-			Summary:     "No usable text was provided for analysis.",
-			ActionItems: []string{"Provide text input or upload a file to analyze."},
-			Entities:    []string{},
+			Urgency:           "LOW",
+			Confidence:        0.55,
+			Summary:           "No usable text was provided for analysis.",
+			PossibleCondition: "Insufficient information",
+			Actions:           []string{"Provide text input or upload a file to analyze."},
+			DoNot:             []string{"Do not rely on this result without usable input."},
+			Reasoning:         "The request did not include enough readable content to classify safely.",
 		}
 	}
 
 	sanitized := strings.Join(strings.Fields(trimmed), " ")
-	preview := sanitized
-	if len(preview) > 160 {
-		preview = preview[:160] + "..."
+	result := buildScenarioResult(sanitized)
+
+	if input != nil && isMediaMIMEType(input.MIMEType) && strings.TrimSpace(input.Text) == "" {
+		result = &ExtractionResult{
+			Urgency:           "HIGH",
+			Confidence:        0.74,
+			Summary:           fmt.Sprintf("A %s file was uploaded and should be reviewed for urgent safety cues.", mediaLabel(input.MIMEType)),
+			PossibleCondition: fmt.Sprintf("%s safety incident requiring media review", mediaKind(input.MIMEType)),
+			Actions: []string{
+				fmt.Sprintf("Inspect the uploaded %s for immediate signs of danger or distress.", mediaLabel(input.MIMEType)),
+				"Add a short text description if you want a more accurate safety assessment.",
+				"Call emergency services immediately if the evidence suggests a life-threatening situation.",
+			},
+			DoNot: []string{
+				"Do not rely on a mock-mode result alone for a serious emergency.",
+			},
+			Reasoning: "In mock mode the backend can accept the media upload path, but it cannot truly interpret image or audio content without a live multimodal model call.",
+		}
 	}
 
-	result := &ExtractionResult{
-		Urgency:     inferUrgency(strings.ToLower(sanitized)),
-		Summary:     fmt.Sprintf("Local analysis mode generated a provisional summary from the supplied content: %s", preview),
-		ActionItems: buildActionItems(sanitized),
-		Entities:    extractEntities(sanitized),
-	}
-
-	normalizeExtractionResult(result, text)
+	normalizeExtractionResult(result, sourceText)
 	return result
+}
+
+func buildPromptParts(input *AnalysisInput) []genai.Part {
+	userText := fallbackInputText(input)
+	parts := []genai.Part{
+		genai.Text(fmt.Sprintf(emergencyResponsePromptTemplate, userText)),
+	}
+
+	if input != nil && len(input.FileData) > 0 && isMediaMIMEType(input.MIMEType) {
+		parts = append(parts, genai.Blob{
+			MIMEType: input.MIMEType,
+			Data:     input.FileData,
+		})
+	}
+
+	return parts
+}
+
+func isMediaMIMEType(mimeType string) bool {
+	lower := strings.ToLower(mimeType)
+	return strings.HasPrefix(lower, "image/") || strings.HasPrefix(lower, "audio/")
+}
+
+func mediaKind(mimeType string) string {
+	lower := strings.ToLower(mimeType)
+	switch {
+	case strings.HasPrefix(lower, "audio/"):
+		return "audio"
+	default:
+		return "visual"
+	}
+}
+
+func mediaLabel(mimeType string) string {
+	lower := strings.ToLower(mimeType)
+	switch {
+	case strings.HasPrefix(lower, "audio/"):
+		return "audio"
+	default:
+		return "image"
+	}
 }
 
 func normalizeExtractionResult(result *ExtractionResult, sourceText string) {
@@ -119,20 +227,32 @@ func normalizeExtractionResult(result *ExtractionResult, sourceText string) {
 		result.Summary = "No summary was returned."
 	}
 
-	if len(result.ActionItems) == 0 {
-		result.ActionItems = buildActionItems(sourceText)
+	if result.Confidence <= 0 {
+		result.Confidence = inferConfidence(result.Urgency)
 	}
 
-	if len(result.Entities) == 0 {
-		result.Entities = extractEntities(sourceText)
+	if strings.TrimSpace(result.PossibleCondition) == "" {
+		result.PossibleCondition = inferCondition(sourceText)
+	}
+
+	if len(result.Actions) == 0 {
+		result.Actions = buildActions(sourceText)
+	}
+
+	if len(result.DoNot) == 0 {
+		result.DoNot = buildDoNot(sourceText)
+	}
+
+	if strings.TrimSpace(result.Reasoning) == "" {
+		result.Reasoning = buildReasoning(sourceText, result.Urgency)
 	}
 }
 
 func inferUrgency(lowerText string) string {
 	switch {
-	case strings.Contains(lowerText, "critical"), strings.Contains(lowerText, "breach"), strings.Contains(lowerText, "urgent"), strings.Contains(lowerText, "sev-1"):
+	case strings.Contains(lowerText, "chest pain"), strings.Contains(lowerText, "heart attack"), strings.Contains(lowerText, "difficulty breathing"), strings.Contains(lowerText, "unconscious"), strings.Contains(lowerText, "critical"), strings.Contains(lowerText, "urgent"), strings.Contains(lowerText, "sev-1"):
 		return "CRITICAL"
-	case strings.Contains(lowerText, "high"), strings.Contains(lowerText, "incident"), strings.Contains(lowerText, "outage"), strings.Contains(lowerText, "risk"):
+	case strings.Contains(lowerText, "high"), strings.Contains(lowerText, "incident"), strings.Contains(lowerText, "outage"), strings.Contains(lowerText, "risk"), strings.Contains(lowerText, "breach"), strings.Contains(lowerText, "unauthorized access"):
 		return "HIGH"
 	case strings.Contains(lowerText, "medium"), strings.Contains(lowerText, "review"), strings.Contains(lowerText, "follow up"):
 		return "MEDIUM"
@@ -141,47 +261,179 @@ func inferUrgency(lowerText string) string {
 	}
 }
 
-func buildActionItems(text string) []string {
-	items := []string{
-		"Review the generated summary and validate the urgency classification.",
-		"Confirm the extracted entities against the original input.",
-	}
-
+func buildScenarioResult(text string) *ExtractionResult {
 	lowerText := strings.ToLower(text)
 	switch {
+	case strings.Contains(lowerText, "chest pain") || strings.Contains(lowerText, "sweating") || strings.Contains(lowerText, "dizzy"):
+		return &ExtractionResult{
+			Urgency:           "CRITICAL",
+			Confidence:        0.93,
+			Summary:           "Symptoms indicate a possible heart attack.",
+			PossibleCondition: "Cardiac event (heart attack)",
+			Actions: []string{
+				"Call emergency services immediately.",
+				"Make the person sit or lie down.",
+				"Give aspirin if available and not allergic.",
+				"Stay calm and monitor breathing.",
+			},
+			DoNot: []string{
+				"Do not leave the person alone.",
+				"Do not delay seeking help.",
+			},
+			Reasoning: "Chest pain, sweating, and dizziness are classic warning signs of a heart attack.",
+		}
 	case strings.Contains(lowerText, "budget"):
-		items = append(items, "Review the financial variance and confirm the recommended reallocation.")
-	case strings.Contains(lowerText, "incident"), strings.Contains(lowerText, "security"), strings.Contains(lowerText, "breach"):
-		items = append(items, "Notify the incident owner and verify remediation steps are tracked.")
+		return &ExtractionResult{
+			Urgency:           "MEDIUM",
+			Confidence:        0.84,
+			Summary:           "The report points to a budget variance that needs review and possible reallocation.",
+			PossibleCondition: "Budget overrun / planning variance",
+			Actions: []string{
+				"Review the variance drivers against the current budget plan.",
+				"Validate whether the overspend is temporary or structural.",
+				"Propose a reallocation or corrective spending plan.",
+			},
+			DoNot: []string{
+				"Do not approve new discretionary spend until the variance is understood.",
+			},
+			Reasoning: "The input describes overspend, variance drivers, and a need to rebalance funds.",
+		}
+	case strings.Contains(lowerText, "incident"), strings.Contains(lowerText, "security"), strings.Contains(lowerText, "breach"), strings.Contains(lowerText, "unauthorized access"):
+		return &ExtractionResult{
+			Urgency:           "HIGH",
+			Confidence:        0.89,
+			Summary:           "The input describes a security incident that requires immediate containment and response coordination.",
+			PossibleCondition: "Security incident / potential data breach",
+			Actions: []string{
+				"Contain the affected systems or credentials immediately.",
+				"Notify the incident owner and begin incident response procedures.",
+				"Assess scope, impacted records, and remediation status.",
+			},
+			DoNot: []string{
+				"Do not delay escalation to the security response team.",
+				"Do not assume the blast radius is limited without verification.",
+			},
+			Reasoning: "Terms like unauthorized access, incident, breach, and exposed records indicate a potentially serious security event.",
+		}
 	case strings.Contains(lowerText, "audit"), strings.Contains(lowerText, "compliance"):
-		items = append(items, "Assign owners to each compliance gap and set remediation deadlines.")
+		return &ExtractionResult{
+			Urgency:           "MEDIUM",
+			Confidence:        0.82,
+			Summary:           "The input highlights compliance gaps that need tracked remediation.",
+			PossibleCondition: "Compliance control deficiency",
+			Actions: []string{
+				"Assign an owner to each open compliance item.",
+				"Set remediation deadlines and dependency tracking.",
+				"Prepare evidence for follow-up review.",
+			},
+			DoNot: []string{
+				"Do not treat open audit items as informational only.",
+			},
+			Reasoning: "Open audit findings and overdue controls usually indicate a remediation management problem rather than a resolved state.",
+		}
 	default:
-		items = append(items, "Translate the extracted findings into the next operational step.")
+		return &ExtractionResult{
+			Urgency:           inferUrgency(lowerText),
+			Confidence:        inferConfidence(inferUrgency(lowerText)),
+			Summary:           fmt.Sprintf("The input suggests a situation that should be reviewed promptly: %s", truncateForSummary(text)),
+			PossibleCondition: inferCondition(text),
+			Actions:           buildActions(text),
+			DoNot:             buildDoNot(text),
+			Reasoning:         buildReasoning(text, inferUrgency(lowerText)),
+		}
 	}
-
-	return items
 }
 
-func extractEntities(text string) []string {
-	re := regexp.MustCompile(`\b[A-Z][a-zA-Z0-9_-]{2,}\b`)
-	matches := re.FindAllString(text, -1)
-	if len(matches) == 0 {
-		return []string{"LocalMode"}
+func inferConfidence(urgency string) float64 {
+	switch urgency {
+	case "CRITICAL":
+		return 0.93
+	case "HIGH":
+		return 0.89
+	case "MEDIUM":
+		return 0.81
+	default:
+		return 0.72
 	}
+}
 
-	seen := map[string]struct{}{}
-	entities := make([]string, 0, len(matches))
-	for _, match := range matches {
-		if _, ok := seen[match]; ok {
-			continue
+func inferCondition(text string) string {
+	lowerText := strings.ToLower(text)
+	switch {
+	case strings.Contains(lowerText, "chest pain"):
+		return "Cardiac event (heart attack)"
+	case strings.Contains(lowerText, "security"), strings.Contains(lowerText, "breach"), strings.Contains(lowerText, "unauthorized access"):
+		return "Security incident / potential data breach"
+	case strings.Contains(lowerText, "budget"):
+		return "Budget overrun / planning variance"
+	case strings.Contains(lowerText, "audit"), strings.Contains(lowerText, "compliance"):
+		return "Compliance control deficiency"
+	default:
+		return "Needs further assessment"
+	}
+}
+
+func buildActions(text string) []string {
+	lowerText := strings.ToLower(text)
+	switch {
+	case strings.Contains(lowerText, "chest pain"):
+		return []string{
+			"Call emergency services immediately.",
+			"Keep the person seated or lying down.",
+			"Monitor breathing and responsiveness closely.",
 		}
-		seen[match] = struct{}{}
-		entities = append(entities, match)
-		if len(entities) == 6 {
-			break
+	case strings.Contains(lowerText, "security"), strings.Contains(lowerText, "breach"), strings.Contains(lowerText, "incident"):
+		return []string{
+			"Contain the incident and secure affected systems.",
+			"Notify the responsible team and open an incident record.",
+			"Assess impact, scope, and required remediation.",
+		}
+	default:
+		return []string{
+			"Review the input carefully and confirm the main risk.",
+			"Translate the finding into the next concrete action.",
 		}
 	}
+}
 
-	sort.Strings(entities)
-	return entities
+func buildDoNot(text string) []string {
+	lowerText := strings.ToLower(text)
+	switch {
+	case strings.Contains(lowerText, "chest pain"):
+		return []string{
+			"Do not delay seeking emergency help.",
+			"Do not leave the person unattended.",
+		}
+	case strings.Contains(lowerText, "security"), strings.Contains(lowerText, "breach"), strings.Contains(lowerText, "incident"):
+		return []string{
+			"Do not assume the incident is contained without verification.",
+			"Do not delay escalation if customer or regulated data may be affected.",
+		}
+	default:
+		return []string{
+			"Do not act on the result without validating the context.",
+		}
+	}
+}
+
+func buildReasoning(text, urgency string) string {
+	lowerText := strings.ToLower(text)
+	switch {
+	case strings.Contains(lowerText, "chest pain"):
+		return "Symptoms such as chest pain, sweating, and dizziness can indicate an acute cardiac emergency."
+	case strings.Contains(lowerText, "security"), strings.Contains(lowerText, "breach"), strings.Contains(lowerText, "incident"):
+		return "The language points to unauthorized activity or possible data exposure, which raises operational and security risk."
+	case strings.Contains(lowerText, "budget"):
+		return "The described overspend and variance drivers suggest financial controls or planning adjustments are needed."
+	default:
+		return fmt.Sprintf("The urgency was classified as %s based on the terms and risk indicators present in the input.", strings.ToLower(urgency))
+	}
+}
+
+func truncateForSummary(text string) string {
+	cleaned := strings.Join(strings.Fields(text), " ")
+	if len(cleaned) > 140 {
+		return cleaned[:140] + "..."
+	}
+	return cleaned
 }

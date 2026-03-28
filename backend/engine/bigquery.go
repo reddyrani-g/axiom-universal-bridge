@@ -16,14 +16,17 @@ var bqClient *bigquery.Client
 
 // ActionRecord represents a row in BigQuery
 type ActionRecord struct {
-	ID          string                 `bigquery:"id"`
-	Timestamp   time.Time              `bigquery:"timestamp"`
-	InputUri    string                 `bigquery:"input_uri"`
-	Urgency     string                 `bigquery:"urgency"`
-	Summary     string                 `bigquery:"summary"`
-	ActionItems []string               `bigquery:"action_items"`
-	Entities    []string               `bigquery:"entities"`
-	Metadata    map[string]interface{} `bigquery:"metadata"`
+	ID                string                 `bigquery:"id"`
+	Timestamp         time.Time              `bigquery:"timestamp"`
+	InputUri          string                 `bigquery:"input_uri"`
+	Urgency           string                 `bigquery:"urgency"`
+	Confidence        float64                `bigquery:"confidence"`
+	Summary           string                 `bigquery:"summary"`
+	PossibleCondition string                 `bigquery:"possible_condition"`
+	Actions           []string               `bigquery:"actions"`
+	DoNot             []string               `bigquery:"do_not"`
+	Reasoning         string                 `bigquery:"reasoning"`
+	Metadata          map[string]interface{} `bigquery:"metadata"`
 }
 
 // InitBigQuery initializes the BigQuery client
