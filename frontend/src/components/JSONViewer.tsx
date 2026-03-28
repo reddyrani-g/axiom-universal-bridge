@@ -1,56 +1,116 @@
-import React from "react";
+"use client";
+
+import React, { useState } from "react";
+import { ChevronRight } from "lucide-react";
 
 interface JSONViewerProps {
   data: any;
   indent?: number;
+  label?: string;
 }
 
-const JSONViewer: React.FC<JSONViewerProps> = ({ data, indent = 0 }) => {
-  if (data === null) return <span className="text-slate-400">null</span>;
-  if (typeof data === "boolean") return <span className="text-indigo-400">{String(data)}</span>;
-  if (typeof data === "number") return <span className="text-emerald-400">{data}</span>;
-  if (typeof data === "string") return <span className="text-teal-400">"{data}"</span>;
+const INDENT_PX = 18;
 
-  if (Array.isArray(data)) {
-    if (data.length === 0) return <span className="text-slate-400">[]</span>;
+function getValueTone(value: unknown) {
+  if (value === null) return "text-slate-500";
+  if (typeof value === "boolean") return "text-sky-300";
+  if (typeof value === "number") return "text-emerald-300";
+  if (typeof value === "string") return "text-amber-200";
+  return "text-slate-300";
+}
+
+function getPreview(value: unknown) {
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  if (value && typeof value === "object") return `${Object.keys(value).length} field${Object.keys(value).length === 1 ? "" : "s"}`;
+  if (typeof value === "string") return `"${value.length > 40 ? `${value.slice(0, 40)}...` : value}"`;
+  return String(value);
+}
+
+function JSONNode({ data, indent = 0, label }: JSONViewerProps) {
+  const [collapsed, setCollapsed] = useState(indent > 1);
+
+  const isArray = Array.isArray(data);
+  const isObject = Boolean(data) && typeof data === "object" && !isArray;
+  const isCollection = isArray || isObject;
+
+  if (!isCollection) {
     return (
-      <div>
-        <span className="text-slate-400">[</span>
-        {data.map((item, idx) => (
-          <div key={idx} style={{ marginLeft: `${indent + 1}em` }} className="text-slate-300">
-            <JSONViewer data={item} indent={indent + 1} />
-            {idx < data.length - 1 && <span className="text-slate-400">,</span>}
-          </div>
-        ))}
-        <div style={{ marginLeft: `${indent}em` }} className="text-slate-400">
-          ]
-        </div>
+      <div className="flex items-start gap-2 leading-6">
+        {label && <span className="json-key">"{label}"</span>}
+        {label && <span className="text-slate-500">:</span>}
+        <span className={getValueTone(data)}>{typeof data === "string" ? `"${data}"` : String(data)}</span>
       </div>
     );
   }
 
-  if (typeof data === "object") {
-    const keys = Object.keys(data);
-    if (keys.length === 0) return <span className="text-slate-400">{"{}"}</span>;
+  const entries = isArray ? data.map((value, index) => [String(index), value] as const) : Object.entries(data);
+  const openingBracket = isArray ? "[" : "{";
+  const closingBracket = isArray ? "]" : "}";
+
+  if (entries.length === 0) {
     return (
-      <div>
-        <span className="text-slate-400">{"{"}</span>
-        {keys.map((key, idx) => (
-          <div key={key} style={{ marginLeft: `${indent + 1}em` }} className="text-slate-300">
-            <span className="text-violet-400">"{key}"</span>
-            <span className="text-slate-400">: </span>
-            <JSONViewer data={data[key]} indent={indent + 1} />
-            {idx < keys.length - 1 && <span className="text-slate-400">,</span>}
-          </div>
-        ))}
-        <div style={{ marginLeft: `${indent}em` }} className="text-slate-400">
-          {"}"}
-        </div>
+      <div className="flex items-start gap-2 leading-6">
+        {label && <span className="json-key">"{label}"</span>}
+        {label && <span className="text-slate-500">:</span>}
+        <span className="text-slate-500">
+          {openingBracket}
+          {closingBracket}
+        </span>
       </div>
     );
   }
 
-  return <span className="text-slate-400">{String(data)}</span>;
-};
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setCollapsed(prev => !prev)}
+        className="group flex w-full items-start gap-2 rounded-lg px-2 py-1 text-left transition hover:bg-white/5"
+      >
+        <ChevronRight
+          size={14}
+          className={`mt-1 flex-shrink-0 text-slate-500 transition-transform ${collapsed ? "" : "rotate-90"}`}
+        />
+        <div className="min-w-0 flex-1 leading-6">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            {label && <span className="json-key">"{label}"</span>}
+            {label && <span className="text-slate-500">:</span>}
+            <span className="text-slate-400">
+              {openingBracket}
+              {collapsed ? closingBracket : ""}
+            </span>
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              {getPreview(data)}
+            </span>
+          </div>
+          {collapsed && <p className="mt-1 truncate text-xs text-slate-500">{entries.slice(0, 3).map(([, value]) => getPreview(value)).join(" • ")}</p>}
+        </div>
+      </button>
 
-export default JSONViewer;
+      {!collapsed && (
+        <div
+          className="mt-1 space-y-1 border-l border-white/10"
+          style={{ marginLeft: `${indent === 0 ? 0 : 8}px`, paddingLeft: `${INDENT_PX}px` }}
+        >
+          {entries.map(([entryLabel, value]) => (
+            <JSONNode
+              key={`${label ?? "root"}-${entryLabel}`}
+              data={value}
+              indent={indent + 1}
+              label={isArray ? undefined : entryLabel}
+            />
+          ))}
+          <div className="pl-2 text-slate-500">{closingBracket}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function JSONViewer({ data }: JSONViewerProps) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-[#07111f] p-3 text-xs font-medium text-slate-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+      <JSONNode data={data} />
+    </div>
+  );
+}

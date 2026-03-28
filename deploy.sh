@@ -10,15 +10,17 @@ fi
 echo "🚀 Deploying Axiom Universal Bridge to Google Cloud Run..."
 echo "📦 Project: $PROJECT_ID"
 
-# Deploy Go backend to Cloud Run
+# Deploy Go backend to Cloud Run from backend folder
 echo ""
 echo "⏳ Building and deploying Go backend..."
+cd backend
 gcloud run deploy axiom-bridge \
   --source . \
   --region us-central1 \
   --allow-unauthenticated \
   --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1 \
   --quiet
+cd ..
 
 echo ""
 echo "✅ Axiom Universal Bridge deployed successfully!"
